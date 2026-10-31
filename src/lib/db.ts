@@ -30,15 +30,29 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
 
 export async function readDb(): Promise<Db> {
   const file = dbFile();
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
   try {
-    const stat = await fs.stat(file);
-    if (g.__ddCache && g.__ddCache.mtime === stat.mtimeMs) return structuredClone(g.__ddCache.db);
-    const raw = await fs.readFile(file, "utf8");
+    stat = await fs.stat(file);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(EMPTY);
+    throw new Error(`Failed to read database file ${file}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (g.__ddCache && g.__ddCache.mtime === stat.mtimeMs) return structuredClone(g.__ddCache.db);
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(EMPTY);
+    throw new Error(`Failed to read database file ${file}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  try {
     const db = { ...EMPTY, ...(JSON.parse(raw) as Partial<Db>) };
     g.__ddCache = { mtime: stat.mtimeMs, db };
     return structuredClone(db);
-  } catch {
-    return structuredClone(EMPTY);
+  } catch (e) {
+    const backup = `${file}.corrupt-${Date.now()}`;
+    try { await fs.copyFile(file, backup); } catch { /* best effort — still refuse to proceed */ }
+    throw new Error(`Database file ${file} is corrupt (invalid JSON: ${e instanceof Error ? e.message : String(e)}). A copy was saved to ${backup} where possible. Refusing to overwrite the corrupt file — fix or restore it manually.`);
   }
 }
 

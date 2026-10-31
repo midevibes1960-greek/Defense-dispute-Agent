@@ -12,8 +12,9 @@ export async function POST(req: Request) {
 
   const eventId = String(body.id ?? "");
   const eventType = String(body.event_type ?? "UNKNOWN");
-  if (eventId && (await seenWebhook(eventId))) return NextResponse.json({ ok: true, deduped: true });
 
+  // Verify BEFORE the dedupe check so a forged event cannot poison the
+  // dedupe store and block the genuine event with the same id.
   let verified = false;
   let verifyReason = "PayPal not connected — signature not verified";
   if (paypalConfigured()) {
@@ -25,11 +26,23 @@ export async function POST(req: Request) {
   }
 
   const resource = (body.resource ?? {}) as Record<string, unknown>;
-  const disputeId = String(resource.dispute_id ?? "unknown");
-  if (resource.dispute_id) {
-    const existing = await getCase(disputeId);
-    await upsertCase(toDispute(resource, existing));
+
+  // Allowlist: only dispute lifecycle events mutate local cases.
+  if (!eventType.startsWith("CUSTOMER.DISPUTE.")) {
+    const hint = String(resource.dispute_id ?? "unknown");
+    await logEvent(hint, "paypal", "webhook_ignored", `${eventType} ignored — not a dispute event · signature ${verified ? "verified" : `unverified (${verifyReason})`}`);
+    return NextResponse.json({ ok: true, ignored: true, event_type: eventType, verified });
   }
+
+  if (!resource.dispute_id) {
+    return NextResponse.json({ ok: false, error: "Missing resource.dispute_id" }, { status: 400 });
+  }
+  const disputeId = String(resource.dispute_id);
+
+  if (eventId && (await seenWebhook(eventId))) return NextResponse.json({ ok: true, deduped: true });
+
+  const existing = await getCase(disputeId);
+  await upsertCase(toDispute(resource, existing));
   if (eventId) await markWebhook(eventId);
   await logEvent(disputeId, "paypal", "webhook", `${eventType} received · signature ${verified ? "verified" : `unverified (${verifyReason})`}`);
   return NextResponse.json({ ok: true, dispute_id: disputeId, event_type: eventType, verified });

@@ -7,7 +7,12 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Dispute Defense — PayPal dispute workspace",
-  description: "Watch PayPal disputes, score contest vs accept, build evidence, submit after one-tap approval. Real Disputes API, persistent cases, full audit trail.",
+  description: "Watch PayPal disputes, score contest vs accept by expected value, auto-fill the evidence PayPal asks for, and submit only after human approval. Real Disputes API, persistent cases, full audit trail.",
+  openGraph: {
+    title: "Dispute Defense — never miss a PayPal dispute deadline",
+    description: "Contest-vs-accept EV scoring, reason-specific evidence packs, human-approved submission via the PayPal Disputes API.",
+    type: "website",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

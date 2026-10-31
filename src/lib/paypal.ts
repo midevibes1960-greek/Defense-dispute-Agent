@@ -33,8 +33,13 @@ export async function getToken(): Promise<string> {
     headers: { Authorization: "Basic " + Buffer.from(`${id}:${sec}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
     body: "grant_type=client_credentials",
     cache: "no-store",
+    signal: AbortSignal.timeout(20000),
   });
-  const j = await r.json().catch(() => ({}));
+  const tokenText = await r.text();
+  let j: any = {};
+  if (tokenText) {
+    try { j = JSON.parse(tokenText); } catch { throw new PaypalError(r.status || 502, `PayPal OAuth returned a non-JSON response (HTTP ${r.status}): ${tokenText.slice(0, 300)}`); }
+  }
   if (!r.ok || !j.access_token) throw new PaypalError(r.status, `PayPal OAuth failed (${r.status}): ${j.error_description ?? j.error ?? "check client id/secret + environment"}`, { paypalName: j.error });
   g.__ppToken = { token: j.access_token, exp: Date.now() + (Number(j.expires_in ?? 3600) * 1000) };
   return j.access_token;
@@ -42,9 +47,13 @@ export async function getToken(): Promise<string> {
 
 async function api<T>(path: string, init?: RequestInit): Promise<{ data: T; status: number }> {
   const t = await getToken();
-  const r = await fetch(`${paypalBase()}${path}`, { ...init, headers: { Authorization: `Bearer ${t}`, ...(init?.headers ?? {}) }, cache: "no-store" });
+  const r = await fetch(`${paypalBase()}${path}`, { ...init, headers: { Authorization: `Bearer ${t}`, ...(init?.headers ?? {}) }, cache: "no-store", signal: init?.signal ?? AbortSignal.timeout(20000) });
   const text = await r.text();
-  const data = text ? (JSON.parse(text) as T) : ({} as T);
+  let data: T;
+  if (!text) data = {} as T;
+  else {
+    try { data = JSON.parse(text) as T; } catch { throw new PaypalError(r.status || 502, `PayPal ${path} returned a non-JSON response (HTTP ${r.status}): ${text.slice(0, 300)}`); }
+  }
   if (!r.ok) {
     const e = data as { name?: string; message?: string; debug_id?: string; details?: unknown };
     throw new PaypalError(r.status, `PayPal ${r.status} ${e.name ?? ""}: ${e.message ?? text.slice(0, 300)}`.trim(), { paypalName: e.name, debugId: e.debug_id, details: e.details });
@@ -159,9 +168,12 @@ export async function provideEvidence(id: string, evidences: EvidenceDraft[], fi
   const form = new FormData();
   form.append("input", new Blob([JSON.stringify({ evidences: withDocs })], { type: "application/json" }));
   for (const f of files) form.append(f.name, new Blob([new Uint8Array(f.buffer)], { type: f.type || "application/octet-stream" }), f.name);
-  const r = await fetch(`${paypalBase()}/v1/customer/disputes/${encodeURIComponent(id)}/provide-evidence`, { method: "POST", headers: { Authorization: `Bearer ${t}` }, body: form });
+  const r = await fetch(`${paypalBase()}/v1/customer/disputes/${encodeURIComponent(id)}/provide-evidence`, { method: "POST", headers: { Authorization: `Bearer ${t}` }, body: form, signal: AbortSignal.timeout(20000) });
   const text = await r.text();
-  const data = text ? JSON.parse(text) : {};
+  let data: any = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch { throw new PaypalError(r.status || 502, `provide-evidence returned a non-JSON response (HTTP ${r.status}): ${text.slice(0, 300)}`); }
+  }
   if (!r.ok) throw new PaypalError(r.status, `provide-evidence failed: ${data.message ?? text.slice(0, 300)}`, { paypalName: data.name, debugId: data.debug_id, details: data.details });
   return { ok: true, status: r.status, links: data.links };
 }
@@ -203,8 +215,13 @@ export async function verifyWebhook(headers: Headers, rawBody: string): Promise<
       webhook_id: webhookId,
       webhook_event: JSON.parse(rawBody),
     }),
+    signal: AbortSignal.timeout(20000),
   });
-  const j = await r.json().catch(() => ({}));
+  const verifyText = await r.text();
+  let j: any = {};
+  if (verifyText) {
+    try { j = JSON.parse(verifyText); } catch { throw new PaypalError(r.status || 502, `PayPal verify-webhook-signature returned a non-JSON response (HTTP ${r.status}): ${verifyText.slice(0, 300)}`); }
+  }
   return { verified: j.verification_status === "SUCCESS", reason: j.verification_status ?? `verify HTTP ${r.status}` };
 }
 

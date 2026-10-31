@@ -85,7 +85,7 @@ export interface Decision {
   evidence_completeness: number; // 0..1
   factors: DecisionFactor[];
   reasoning: string[];
-  evidence_checklist: { label: string; done: boolean; detail?: string; kind: EvidenceType }[];
+  evidence_checklist: { label: string; done: boolean; detail?: string; kind: EvidenceType; required?: boolean }[];
   draft_note: string;
   model: string;
   ai_error?: string;

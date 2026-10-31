@@ -1,4 +1,4 @@
-import { listCases } from "./db";
+import type { listCases } from "./db";
 import type { Metrics } from "./types";
 
 export function computeMetrics(cases: Awaited<ReturnType<typeof listCases>>): Metrics {
@@ -12,7 +12,7 @@ export function computeMetrics(cases: Awaited<ReturnType<typeof listCases>>): Me
     total: cases.length,
     open: openCases.length,
     needs_response: cases.filter((c) => c.status === "WAITING_FOR_SELLER_RESPONSE").length,
-    at_risk_24h: cases.filter((c) => c.outcome === "open" && new Date(c.seller_response_due_date).getTime() - now < 24 * 3600_000 && new Date(c.seller_response_due_date).getTime() > now).length,
+    at_risk_24h: cases.filter((c) => c.outcome === "open" && new Date(c.seller_response_due_date).getTime() - now < 24 * 3600_000).length,
     under_review: cases.filter((c) => c.outcome === "under_review" || c.status === "UNDER_REVIEW").length,
     resolved: cases.filter((c) => c.status === "RESOLVED" || ["won","lost","accepted"].includes(c.outcome)).length,
     contested: cases.filter((c) => c.outcome === "under_review" || c.outcome === "won" || c.outcome === "lost").length,

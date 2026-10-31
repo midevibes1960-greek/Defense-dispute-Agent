@@ -1,10 +1,10 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bot, CheckCircle2, FileUp, Loader2, Lock, MessageSquare, Package, Scale, Send, Trash2, TriangleAlert, X } from "lucide-react";
+import { ArrowLeft, Bot, CheckCircle2, FileUp, Loader2, Lock, MessageSquare, Package, Scale, Send, Sparkles, Trash2, TriangleAlert, X } from "lucide-react";
 import type { AuditEvent, Decision, Dispute, Submission } from "@/lib/types";
-import { buildEvidences } from "@/lib/decision";
+import { buildChecklist, buildEvidences } from "@/lib/decision";
 import { Card, Badge, SourceBadge, OutcomeBadge, WinGauge, Money } from "./chrome";
 import { Countdown } from "./Countdown";
 
@@ -27,79 +27,192 @@ export function CaseWorkspace({ dispute: initial, decision: initialDecision, eve
   const [policy, setPolicy] = useState(initial.order.return_policy ?? "");
   const [refundId, setRefundId] = useState(initial.order.refund_id ?? "");
   const [offerAmount, setOfferAmount] = useState("");
+  const [buyerMsg, setBuyerMsg] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, setPending] = useState<ActionKind | null>(null);
   const [outcome, setOutcome] = useState("won");
 
-  const payloadPreview = useMemo(() => {
-    const overlay: Dispute = { ...dispute, order: { ...dispute.order, listing_text: listing || undefined, return_policy: policy || undefined, refund_id: refundId || undefined, tracking: tracking ? { carrier_name: carrier || "OTHER", tracking_number: tracking, delivery_status: delivery as Dispute["order"]["tracking"] extends { delivery_status?: infer T } ? T : never } : undefined } };
-    return buildEvidences(overlay, note);
-  }, [dispute, listing, policy, refundId, tracking, carrier, delivery, note]);
+  // Sync local state when server props change (e.g. after router.refresh()).
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDispute(initial);
+    setDecision(initialDecision);
+    setNote(initialDecision.draft_note);
+    setCarrier(initial.order.tracking?.carrier_name ?? "");
+    setTracking(initial.order.tracking?.tracking_number ?? "");
+    setDelivery(initial.order.tracking?.delivery_status ?? "UNKNOWN");
+    setListing(initial.order.listing_text ?? "");
+    setPolicy(initial.order.return_policy ?? "");
+    setRefundId(initial.order.refund_id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial.update_time, initialDecision.decided_at]);
 
-  const missing = decision.evidence_checklist.filter((c) => !c.done);
+  // Close confirm modal on Escape (never while a submission is in flight).
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && busy === null) setPending(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, busy]);
+
+  const overlayDispute = useMemo<Dispute>(() => ({ ...dispute, order: { ...dispute.order, listing_text: listing || undefined, return_policy: policy || undefined, refund_id: refundId || undefined, tracking: tracking ? { carrier_name: carrier || "OTHER", tracking_number: tracking, delivery_status: delivery as Dispute["order"]["tracking"] extends { delivery_status?: infer T } ? T : never } : undefined } }), [dispute, listing, policy, refundId, tracking, carrier, delivery]);
+
+  const payloadPreview = useMemo(() => buildEvidences(overlayDispute, note), [overlayDispute, note]);
+
+  type ChecklistItem = Decision["evidence_checklist"][number] & { required?: boolean };
+  const liveChecklist = useMemo(() => buildChecklist(overlayDispute) as ChecklistItem[], [overlayDispute]);
+  const requiredChecklist = liveChecklist.filter((c) => c.required !== false);
+  const missing = requiredChecklist.filter((c) => !c.done);
+  const liveCompleteness = requiredChecklist.length ? requiredChecklist.filter((c) => c.done).length / requiredChecklist.length : 1;
+
+  async function persistEvidence(): Promise<boolean> {
+    try {
+      const r = await fetch(`/api/disputes/${dispute.dispute_id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ carrier_name: carrier, tracking_number: tracking, delivery_status: delivery, listing_text: listing, return_policy: policy, refund_id: refundId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setResult({ ok: false, text: j.error ?? "Save failed" }); return false; }
+      if (j.dispute) {
+        setDispute(j.dispute);
+        setCarrier(j.dispute.order.tracking?.carrier_name ?? "");
+        setTracking(j.dispute.order.tracking?.tracking_number ?? "");
+        setDelivery(j.dispute.order.tracking?.delivery_status ?? "UNKNOWN");
+        setListing(j.dispute.order.listing_text ?? "");
+        setPolicy(j.dispute.order.return_policy ?? "");
+        setRefundId(j.dispute.order.refund_id ?? "");
+      }
+      if (j.decision) {
+        setDecision(j.decision);
+        setNote((n) => (n === decision.draft_note ? j.decision.draft_note : n));
+      }
+      return true;
+    } catch {
+      setResult({ ok: false, text: "Network error — could not save evidence details. Is the server running?" });
+      return false;
+    }
+  }
 
   async function saveEvidence() {
     setBusy("save"); setResult(null);
-    const r = await fetch(`/api/disputes/${dispute.dispute_id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ carrier_name: carrier, tracking_number: tracking, delivery_status: delivery, listing_text: listing, return_policy: policy, refund_id: refundId }),
-    });
-    const j = await r.json();
-    setBusy(null);
-    if (!r.ok) { setResult({ ok: false, text: j.error ?? "Save failed" }); return; }
-    setDispute(j.dispute); setDecision(j.decision); setNote((n) => (n === decision.draft_note ? j.decision.draft_note : n));
-    setResult({ ok: true, text: "Evidence details saved. Decision recalculated from the new facts." });
-    router.refresh();
+    try {
+      const ok = await persistEvidence();
+      if (ok) {
+        setResult({ ok: true, text: "Evidence details saved. Decision recalculated from the new facts." });
+        router.refresh();
+      }
+    } finally { setBusy(null); }
+  }
+
+  async function prepareAction(kind: ActionKind) {
+    if (busy !== null) return;
+    setBusy("save"); setResult(null);
+    try {
+      const ok = await persistEvidence();
+      if (!ok) return;
+      setPending(kind);
+    } finally { setBusy(null); }
   }
 
   async function runDecision() {
     setBusy("decide"); setResult(null);
-    const r = await fetch(`/api/disputes/${dispute.dispute_id}/decide`, { method: "POST" });
-    const j = await r.json();
-    setBusy(null);
-    if (!r.ok) { setResult({ ok: false, text: j.error ?? "Decision failed" }); return; }
-    setDecision(j.decision); setNote(j.decision.draft_note);
-    setResult({ ok: true, text: j.decision.ai_error ?? `Decision updated via ${j.decision.model}: ${j.decision.recommendation.toUpperCase()} @ ${Math.round(j.decision.win_probability * 100)}%.` });
-    router.refresh();
+    try {
+      const r = await fetch(`/api/disputes/${dispute.dispute_id}/decide`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setResult({ ok: false, text: j.error ?? "Decision failed" }); return; }
+      setDecision(j.decision); setNote(j.decision.draft_note);
+      setResult({ ok: true, text: j.decision.ai_error ?? `Decision updated via ${j.decision.model}: ${j.decision.recommendation.toUpperCase()} @ ${Math.round(j.decision.win_probability * 100)}%.` });
+      router.refresh();
+    } catch { setResult({ ok: false, text: "Network error — decision failed. Is the server running?" }); }
+    finally { setBusy(null); }
+  }
+
+  async function enrich() {
+    setBusy("enrich"); setResult(null);
+    try {
+      const r = await fetch(`/api/disputes/${dispute.dispute_id}/enrich`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { setResult({ ok: false, text: j.error ?? `Auto-fill failed (${r.status})` }); return; }
+      if (j.dispute) {
+        setDispute(j.dispute);
+        setCarrier(j.dispute.order.tracking?.carrier_name ?? "");
+        setTracking(j.dispute.order.tracking?.tracking_number ?? "");
+        setDelivery(j.dispute.order.tracking?.delivery_status ?? "UNKNOWN");
+        setListing(j.dispute.order.listing_text ?? "");
+        setPolicy(j.dispute.order.return_policy ?? "");
+        setRefundId(j.dispute.order.refund_id ?? "");
+      }
+      if (j.decision) {
+        setDecision(j.decision);
+        setNote((n) => (n === decision.draft_note ? j.decision.draft_note : n));
+      }
+      const found: string[] = Array.isArray(j.found) ? j.found : [];
+      const missingList: string[] = Array.isArray(j.missing) ? j.missing : [];
+      setResult({ ok: true, text: `Agent auto-fill: ${found.length ? `found ${found.join(", ")}` : "no new evidence found"}${missingList.length ? ` · still missing: ${missingList.join(", ")}` : " · evidence is complete"}.` });
+    } catch { setResult({ ok: false, text: "Network error — auto-fill failed. Is the server running?" }); }
+    finally { setBusy(null); }
   }
 
   async function doSubmit() {
     if (!pending) return;
+    const action = pending;
     setBusy("submit");
-    const form = new FormData();
-    form.append("action", pending);
-    form.append("note", note);
-    if (pending === "offer") form.append("offer_amount", offerAmount);
-    for (const f of files) form.append("files", f);
-    const r = await fetch(`/api/disputes/${dispute.dispute_id}/submit`, { method: "POST", body: form });
-    const j = await r.json();
-    setBusy(null); setPending(null);
-    setResult({ ok: r.ok && j.ok, text: j.message ?? j.error ?? `Request failed (${r.status})` });
-    if (r.ok) { setFiles([]); router.refresh(); }
+    try {
+      const form = new FormData();
+      form.append("action", action);
+      form.append("note", action === "message" ? buyerMsg : note);
+      if (action === "offer") form.append("offer_amount", offerAmount);
+      for (const f of files) form.append("files", f);
+      const r = await fetch(`/api/disputes/${dispute.dispute_id}/submit`, { method: "POST", body: form });
+      const j = await r.json().catch(() => ({}));
+      setResult({ ok: r.ok && !!j.ok, text: j.message ?? j.error ?? `Request failed (${r.status})` });
+      setPending(null);
+      if (r.ok && j.ok) {
+        setFiles([]);
+        if (action === "message") setBuyerMsg("");
+        if (action === "contest") setDispute((d) => ({ ...d, status: "UNDER_REVIEW", outcome: "under_review" }));
+        else if (action === "accept") setDispute((d) => ({ ...d, status: "RESOLVED", outcome: "accepted" }));
+        router.refresh();
+      }
+    } catch {
+      setResult({ ok: false, text: "Network error — submission failed. Is the server running?" });
+      setPending(null);
+    } finally { setBusy(null); }
   }
 
   async function recordOutcome() {
     setBusy("outcome");
-    const r = await fetch(`/api/disputes/${dispute.dispute_id}/outcome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outcome }) });
-    const j = await r.json();
-    setBusy(null);
-    setResult({ ok: r.ok, text: r.ok ? `Outcome recorded as ${outcome.toUpperCase()}. Metrics now reflect this.` : (j.error ?? "Failed") });
-    if (r.ok) router.refresh();
+    try {
+      const r = await fetch(`/api/disputes/${dispute.dispute_id}/outcome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outcome }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setResult({ ok: false, text: j.error ?? "Failed" }); return; }
+      if (j.dispute) setDispute(j.dispute);
+      else setDispute((d) => ({ ...d, outcome: outcome as Dispute["outcome"] }));
+      setResult({ ok: true, text: `Outcome recorded as ${outcome.toUpperCase()}. Metrics now reflect this.` });
+      router.refresh();
+    } catch { setResult({ ok: false, text: "Network error — could not record outcome. Is the server running?" }); }
+    finally { setBusy(null); }
   }
 
   async function remove() {
     if (!confirm(`Delete the local copy of ${dispute.dispute_id}? This does not touch PayPal.`)) return;
-    await fetch(`/api/disputes/${dispute.dispute_id}`, { method: "DELETE" });
-    router.push("/"); router.refresh();
+    setBusy("delete"); setResult(null);
+    try {
+      const r = await fetch(`/api/disputes/${dispute.dispute_id}`, { method: "DELETE" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setResult({ ok: false, text: j.error ?? `Delete failed (${r.status})` }); return; }
+      router.push("/"); router.refresh();
+    } catch { setResult({ ok: false, text: "Network error — delete failed. Is the server running?" }); }
+    finally { setBusy(null); }
   }
 
   const actionMeta: Record<ActionKind, { title: string; desc: string }> = {
     contest: { title: "Submit evidence to PayPal", desc: `Sends provide-evidence for ${dispute.dispute_id} with the payload below${files.length ? ` and ${files.length} file(s)` : ""}. PayPal then moves the case to UNDER_REVIEW.` },
     accept: { title: "Accept the claim", desc: `Closes ${dispute.dispute_id} in the buyer's favour. PayPal refunds ${dispute.currency} ${dispute.dispute_amount} from the seller account. This cannot be undone.` },
     offer: { title: "Make a refund offer", desc: `Sends make-offer of ${dispute.currency} ${offerAmount || "0"} to settle ${dispute.dispute_id} without a full contest.` },
-    message: { title: "Send buyer a message", desc: "Sends the note below to the buyer via send-message. Does not submit evidence." },
+    message: { title: "Send buyer a message", desc: "Sends your Message to buyer text to the buyer via send-message. Does not submit evidence." },
   };
 
   return (
@@ -170,11 +283,12 @@ export function CaseWorkspace({ dispute: initial, decision: initialDecision, eve
           <Card className="p-4">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="flex items-center gap-2 text-[15px] font-black"><Package className="size-4 text-[#003087]" /> Evidence builder</h2>
-              <Badge tone={decision.evidence_completeness >= 1 ? "green" : "amber"}>{Math.round(decision.evidence_completeness * 100)}% complete</Badge>
+              <Badge tone={liveCompleteness >= 1 ? "green" : "amber"}>{Math.round(liveCompleteness * 100)}% complete</Badge>
               <span className="text-[12px] text-slate-400">PayPal asked for: {dispute.evidence_requested.join(", ") || "OTHER"}</span>
+              <button disabled={busy !== null} onClick={enrich} title="Auto-fill from PayPal" className="ml-auto flex items-center gap-1.5 rounded-full bg-violet-600 px-4 py-2 text-[12px] font-bold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50">{busy === "enrich" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Agent: auto-fill evidence</button>
             </div>
             <div className="mt-3 grid gap-1.5">
-              {decision.evidence_checklist.map((c) => (
+              {liveChecklist.map((c) => (
                 <div key={c.label} className="flex gap-2.5 rounded-xl bg-slate-50 p-2.5 ring-1 ring-slate-100">
                   <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-black ${c.done ? "bg-emerald-600 text-white" : "bg-red-100 text-red-700"}`}>{c.done ? "✓" : "!"}</span>
                   <span className="text-[12px]"><b className="block text-[13px]">{c.label}</b><span className="text-slate-500">{c.detail}</span></span>
@@ -218,14 +332,18 @@ export function CaseWorkspace({ dispute: initial, decision: initialDecision, eve
             {!canSubmit && (
               <p className="mt-2 flex gap-2 rounded-xl bg-amber-50 p-3 text-[12px] leading-relaxed text-amber-900 ring-1 ring-amber-200"><Lock className="mt-0.5 size-4 shrink-0" /><span>{dispute.source !== "paypal" ? <>This is a {dispute.source} case — there is no PayPal dispute with this ID to act on. Buttons stay disabled so nothing fake can be &ldquo;submitted&rdquo;. Use <b>Record outcome</b> on the right to track what happened offline, or sync a real PayPal dispute.</> : <>PayPal keys are missing, so these actions are disabled. Add keys on the <Link href="/connect" className="font-bold underline">connection page</Link> and restart.</>}</span></p>
             )}
+            <div className="mt-3">
+              <label className={label}>Message to buyer</label>
+              <textarea value={buyerMsg} onChange={(e) => setBuyerMsg(e.target.value)} rows={2} placeholder="Write a message to the buyer…" className={input} />
+            </div>
             <div className="mt-3 flex flex-wrap items-end gap-2">
-              <button disabled={!canSubmit || missing.length > 0} onClick={() => setPending("contest")} className="rounded-full bg-emerald-600 px-5 py-2.5 text-[13px] font-bold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40">Approve & submit evidence</button>
-              <button disabled={!canSubmit} onClick={() => setPending("accept")} className="rounded-full bg-white px-5 py-2.5 text-[13px] font-bold text-red-700 ring-1 ring-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40">Accept claim & refund</button>
+              <button disabled={!canSubmit || busy !== null || missing.length > 0} onClick={() => prepareAction("contest")} className="rounded-full bg-emerald-600 px-5 py-2.5 text-[13px] font-bold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40">Approve & submit evidence</button>
+              <button disabled={!canSubmit || busy !== null} onClick={() => prepareAction("accept")} className="rounded-full bg-white px-5 py-2.5 text-[13px] font-bold text-red-700 ring-1 ring-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40">Accept claim & refund</button>
               <span className="flex items-center gap-1.5">
                 <input value={offerAmount} onChange={(e) => setOfferAmount(e.target.value)} type="number" min="0" step="0.01" placeholder="Offer $" className="w-24 rounded-full px-3 py-2.5 text-[13px] ring-1 ring-slate-300 outline-none focus:ring-[#003087]" />
-                <button disabled={!canSubmit || !(Number(offerAmount) > 0)} onClick={() => setPending("offer")} className="rounded-full bg-white px-4 py-2.5 text-[13px] font-bold ring-1 ring-slate-300 disabled:cursor-not-allowed disabled:opacity-40">Make offer</button>
+                <button disabled={!canSubmit || busy !== null || !(Number(offerAmount) > 0)} onClick={() => prepareAction("offer")} className="rounded-full bg-white px-4 py-2.5 text-[13px] font-bold ring-1 ring-slate-300 disabled:cursor-not-allowed disabled:opacity-40">Make offer</button>
               </span>
-              <button disabled={!canSubmit} onClick={() => setPending("message")} className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2.5 text-[13px] font-bold ring-1 ring-slate-300 disabled:cursor-not-allowed disabled:opacity-40"><MessageSquare className="size-4" /> Message buyer</button>
+              <button disabled={!canSubmit || busy !== null || !buyerMsg.trim()} onClick={() => prepareAction("message")} className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2.5 text-[13px] font-bold ring-1 ring-slate-300 disabled:cursor-not-allowed disabled:opacity-40"><MessageSquare className="size-4" /> Message buyer</button>
             </div>
             <p className="mt-2 text-[11px] text-slate-400">Every action asks for confirmation first and is written to the audit trail with PayPal&rsquo;s real response.</p>
           </Card>
@@ -259,6 +377,7 @@ export function CaseWorkspace({ dispute: initial, decision: initialDecision, eve
                 <li key={s.id} className="rounded-xl bg-slate-50 p-2.5 text-[12px] ring-1 ring-slate-100">
                   <b className={s.ok ? "text-emerald-700" : "text-red-600"}>{s.ok ? "✓" : "✗"} {s.action}</b> <span className="text-slate-400">{new Date(s.at).toLocaleString()}{s.http_status ? ` · HTTP ${s.http_status}` : ""}{s.live ? "" : " · not sent"}</span>
                   <span className="block text-slate-600">{s.message}</span>
+                  {s.paypal_debug_id && <span className="block text-slate-500">PayPal debug: {s.paypal_debug_id}</span>}
                 </li>))}
               </ul>
             )}
@@ -273,17 +392,18 @@ export function CaseWorkspace({ dispute: initial, decision: initialDecision, eve
             )}
           </Card>
 
-          <button onClick={remove} className="flex items-center justify-center gap-1.5 rounded-full bg-white px-4 py-2.5 text-[13px] font-bold text-red-600 ring-1 ring-red-200 hover:bg-red-50"><Trash2 className="size-4" /> Delete local copy</button>
+          <button disabled={busy !== null} onClick={remove} className="flex items-center justify-center gap-1.5 rounded-full bg-white px-4 py-2.5 text-[13px] font-bold text-red-600 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"><Trash2 className="size-4" /> Delete local copy</button>
         </div>
       </div>
 
       {/* confirm modal */}
       {pending && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/60 p-4" role="dialog" aria-modal="true">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/60 p-4" role="dialog" aria-modal="true" onClick={(e) => { if (e.target === e.currentTarget && busy === null) setPending(null); }}>
           <Card className="dd-in w-full max-w-lg p-5">
             <h3 className="text-[17px] font-black">{actionMeta[pending].title}</h3>
             <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">{actionMeta[pending].desc}</p>
             {pending === "contest" && <pre className="nice-scroll mt-3 max-h-44 overflow-auto rounded-xl bg-slate-900 p-3 text-[11px] text-slate-100">{JSON.stringify({ evidences: payloadPreview }, null, 2)}</pre>}
+            {pending === "message" && buyerMsg && <p className="mt-3 rounded-xl bg-slate-50 p-3 text-[13px] text-slate-700 ring-1 ring-slate-200">{buyerMsg}</p>}
             {pending === "accept" && <p className="mt-3 rounded-xl bg-red-50 p-3 text-[13px] font-semibold text-red-700 ring-1 ring-red-200">This refunds the buyer in full and closes the case. It cannot be undone.</p>}
             <div className="mt-4 flex gap-2">
               <button disabled={busy !== null} onClick={doSubmit} className={`flex items-center gap-1.5 rounded-full px-5 py-2.5 text-[13px] font-bold text-white disabled:opacity-50 ${pending === "accept" ? "bg-red-600 hover:bg-red-500" : "bg-emerald-600 hover:bg-emerald-500"}`}>{busy === "submit" ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Yes, send to PayPal</button>

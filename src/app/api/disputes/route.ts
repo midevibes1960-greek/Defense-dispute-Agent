@@ -27,26 +27,45 @@ export async function POST(req: Request) {
   if (!String(b.item_title ?? "").trim()) errors.push("Item / service title is required");
   if (!Number.isFinite(amount) || amount <= 0) errors.push("Amount must be greater than 0");
   if (!REASONS.includes(b.reason)) errors.push("Choose a valid PayPal dispute reason");
+  let dueDate: Date | null = null;
+  if (b.seller_response_due_date) {
+    const d = new Date(b.seller_response_due_date);
+    if (Number.isNaN(d.getTime())) errors.push("seller_response_due_date is not a valid date");
+    else dueDate = d;
+  }
+  let purchaseDate: Date | null = null;
+  if (b.purchase_date) {
+    const d = new Date(b.purchase_date);
+    if (Number.isNaN(d.getTime())) errors.push("purchase_date is not a valid date");
+    else purchaseDate = d;
+  }
+  const currency = String(b.currency ?? "USD").trim().toUpperCase() || "USD";
+  if (!/^[A-Z]{3}$/.test(currency)) errors.push("Currency must be a 3-letter code (e.g. USD)");
   if (errors.length) return NextResponse.json({ ok: false, error: errors.join(". ") }, { status: 422 });
 
+  const DELIVERY_STATUSES = ["DELIVERED", "IN_TRANSIT", "EXCEPTION", "UNKNOWN"] as const;
+  const deliveryStatus = (DELIVERY_STATUSES as readonly string[]).includes(String(b.delivery_status ?? "").toUpperCase())
+    ? (String(b.delivery_status).toUpperCase() as (typeof DELIVERY_STATUSES)[number])
+    : "UNKNOWN";
+
   const now = new Date().toISOString();
-  const due = b.seller_response_due_date ? new Date(b.seller_response_due_date).toISOString() : new Date(Date.now() + 10 * 86400_000).toISOString();
+  const due = dueDate ? dueDate.toISOString() : new Date(Date.now() + 10 * 86400_000).toISOString();
   const reason = b.reason as DisputeReason;
   const dispute: Dispute = {
     dispute_id: `CASE-${Date.now().toString(36).toUpperCase()}`,
     reason, reason_label: REASON_LABELS[reason],
     status: "WAITING_FOR_SELLER_RESPONSE", lifecycle_stage: "INQUIRY",
-    dispute_amount: +amount.toFixed(2), currency: String(b.currency ?? "USD").toUpperCase(),
+    dispute_amount: +amount.toFixed(2), currency,
     create_time: now, update_time: now, seller_response_due_date: due,
     buyer_message: String(b.buyer_message ?? "").trim() || undefined,
     evidence_requested: evidenceForReason(reason),
     order: {
       order_id: String(b.order_id ?? "").trim() || `ORD-${Date.now().toString(36).toUpperCase()}`,
       item_title: String(b.item_title).trim(),
-      amount: +amount.toFixed(2), currency: String(b.currency ?? "USD").toUpperCase(),
+      amount: +amount.toFixed(2), currency,
       buyer_email: String(b.buyer_email ?? "").trim(), buyer_name: String(b.buyer_name ?? "").trim() || "Buyer",
-      purchase_date: b.purchase_date ? new Date(b.purchase_date).toISOString() : now,
-      tracking: b.tracking_number ? { carrier_name: String(b.carrier_name ?? "OTHER").toUpperCase(), tracking_number: String(b.tracking_number).trim(), delivery_status: (b.delivery_status as Dispute["order"]["tracking"] extends { delivery_status?: infer T } ? T : never) ?? "UNKNOWN" } : undefined,
+      purchase_date: purchaseDate ? purchaseDate.toISOString() : now,
+      tracking: b.tracking_number ? { carrier_name: String(b.carrier_name ?? "OTHER").toUpperCase(), tracking_number: String(b.tracking_number).trim(), delivery_status: deliveryStatus } : undefined,
       listing_text: String(b.listing_text ?? "").trim() || undefined,
       return_policy: String(b.return_policy ?? "").trim() || undefined,
       refund_id: String(b.refund_id ?? "").trim() || undefined,

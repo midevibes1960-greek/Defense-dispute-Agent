@@ -4,6 +4,10 @@ services:
     runtime: node
     buildCommand: npm install && npm run build
     startCommand: npm start
+    disk:
+      name: dispute-defense-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PAYPAL_CLIENT_ID
         sync: false
@@ -15,6 +19,15 @@ services:
         sync: false
       - key: AI_API_KEY
         sync: false
-      # Point DATA_DIR at a Render persistent disk mount (e.g. /var/data) so cases survive deploys.
+      - key: AI_MODEL
+        value: gpt-4o-mini
+      - key: AI_BASE_URL
+        value: https://api.openai.com/v1
+      # Persistent disk mount (see disk: above) so cases survive deploys/restarts.
       - key: DATA_DIR
+        value: /var/data
+      # Set this to password-protect the deployed workspace (Basic Auth).
+      # Leave unset only for local development — never deploy with PayPal
+      # keys configured and no access password.
+      - key: APP_ACCESS_PASSWORD
         sync: false

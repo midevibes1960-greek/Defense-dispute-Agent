@@ -33,16 +33,21 @@ export function ConnectPanel() {
     return () => { cancelled = true; };
   }, []);
 
+  const [webhookUrl, setWebhookUrl] = useState("/api/webhooks/paypal");
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setWebhookUrl(`${window.location.origin}/api/webhooks/paypal`); }, []);
+
   async function sync() {
     setBusy("sync"); setMsg(null);
-    const r = await fetch("/api/paypal/sync", { method: "POST" });
-    const j = await r.json();
-    setMsg({ ok: r.ok && j.ok, text: j.message ?? j.error ?? `Failed (${r.status})` });
-    setBusy(null);
-    if (r.ok) router.refresh();
+    try {
+      const r = await fetch("/api/paypal/sync", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      setMsg({ ok: r.ok && !!j.ok, text: j.message ?? j.error ?? `Failed (${r.status})` });
+      if (r.ok) router.refresh();
+    } catch { setMsg({ ok: false, text: "Network error — is the server running?" }); }
+    finally { setBusy(null); }
   }
-
-  const webhookUrl = "/api/webhooks/paypal"; // prefix with your deployed origin
 
   return (
     <div className="flex flex-col gap-3">
@@ -58,7 +63,7 @@ export function ConnectPanel() {
             <Row ok={status.token_ok} label={`OAuth token + dispute read (${status.env})`} value={status.token_ok ? `OK · ${status.dispute_count ?? 0} disputes visible` : (status.error ?? "Failed")} />
             <Row ok={status.webhook_id_set} label="Webhook signature verification" value={status.webhook_id_set ? "PAYPAL_WEBHOOK_ID set" : "Off — set PAYPAL_WEBHOOK_ID to enforce"} />
             <Row ok={status.ai_configured} label="AI model (optional)" value={status.ai_configured ? status.ai_model ?? "configured" : "Not set — explainable rules engine is used and labelled as such"} />
-            <Row ok={status.local_cases > 0} label="Cases in local database" value={`${status.local_cases} total · ${status.paypal_cases} from PayPal`} />
+            <Row ok={status.local_cases > 0 ? true : null} label="Cases in local database" value={`${status.local_cases} total · ${status.paypal_cases} from PayPal`} />
           </div>
         )}
         {status?.token_ok && (
@@ -76,7 +81,7 @@ export function ConnectPanel() {
           </li>
           <li><b className="text-slate-800">3.</b> Restart the server (<code className="rounded bg-slate-100 px-1.5 py-0.5 text-[12px]">npm run dev</code>), come back here, hit <b>Test again</b>, then <b>Sync disputes now</b>. Keys are read server-side only and never shown in the browser.</li>
           <li><b className="text-slate-800">4. Webhooks (optional, for automatic detection):</b> in the same PayPal app, add a webhook pointing at:
-            <span className="mt-1 flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 font-mono text-[12px]">{webhookUrl}<button onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${webhookUrl}`)} className="ml-auto flex items-center gap-1 rounded-full bg-white px-2.5 py-1 font-sans text-[11px] font-bold ring-1 ring-slate-300"><Copy className="size-3" /> Copy</button></span>
+            <span className="mt-1 flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 font-mono text-[12px]">{webhookUrl}<button onClick={() => navigator.clipboard?.writeText(webhookUrl)} className="ml-auto flex items-center gap-1 rounded-full bg-white px-2.5 py-1 font-sans text-[11px] font-bold ring-1 ring-slate-300"><Copy className="size-3" /> Copy</button></span>
             Subscribe to <code className="rounded bg-slate-100 px-1 text-[12px]">CUSTOMER.DISPUTE.CREATED / UPDATED / RESOLVED</code>, then set <code className="rounded bg-slate-100 px-1 text-[12px]">PAYPAL_WEBHOOK_ID</code> so signatures are verified.
           </li>
         </ol>

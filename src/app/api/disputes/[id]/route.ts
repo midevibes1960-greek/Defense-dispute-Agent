@@ -36,10 +36,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   } else if (typeof b.carrier_name === "string" && order.tracking) {
     order.tracking = { ...order.tracking, carrier_name: b.carrier_name.toUpperCase(), delivery_status: DELIVERY.includes(b.delivery_status) ? b.delivery_status : order.tracking.delivery_status };
   }
+  let sellerDue = existing.seller_response_due_date;
+  if (b.seller_response_due_date) {
+    const d = new Date(b.seller_response_due_date);
+    if (!Number.isNaN(d.getTime())) sellerDue = d.toISOString();
+  }
   const updated = await updateCase(disputeId, {
     order,
     buyer_message: typeof b.buyer_message === "string" ? b.buyer_message : existing.buyer_message,
-    seller_response_due_date: b.seller_response_due_date ? new Date(b.seller_response_due_date).toISOString() : existing.seller_response_due_date,
+    seller_response_due_date: sellerDue,
     last_decision: undefined,
   });
   await logEvent(disputeId, "seller", "evidence_edited", "Seller updated order / evidence details");

@@ -1,6 +1,12 @@
 import type { Decision, DecisionFactor, Dispute, EvidenceType } from "./types";
 
-export const CONTEST_COST = 12; // PayPal dispute fee estimate used for EV math (configurable via FEE env in metrics notes)
+export function contestCost(): number {
+  const raw = process.env.DISPUTE_FEE_USD;
+  const parsed = raw !== undefined && raw !== "" ? Number.parseFloat(raw) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 12;
+}
+
+export const CONTEST_COST = contestCost(); // PayPal dispute fee estimate used for EV math (default; contestCost() reads DISPUTE_FEE_USD at call time)
 
 function hoursLeft(d: Dispute) {
   return (new Date(d.seller_response_due_date).getTime() - Date.now()) / 3600_000;
@@ -15,28 +21,33 @@ export function buildChecklist(d: Dispute): Decision["evidence_checklist"] {
       label: "Proof of fulfillment — carrier + tracking",
       done: Boolean(t?.tracking_number && t?.carrier_name),
       detail: t?.tracking_number ? `${t.carrier_name} ${t.tracking_number} · ${t.delivery_status ?? "UNKNOWN"}` : "Missing — add carrier + tracking number below",
+      required: true,
     });
   }
   if (d.evidence_requested.includes("PROOF_OF_REFUND")) {
+    const refundRequired = d.reason === "CREDIT_NOT_PROCESSED";
     items.push({
       kind: "PROOF_OF_REFUND",
       label: "Proof of refund — refund ID",
       done: Boolean(d.order.refund_id),
-      detail: d.order.refund_id ?? "No refund ID on file — add it if you already refunded",
+      detail: refundRequired
+        ? (d.order.refund_id ?? "No refund ID on file — add it if you already refunded")
+        : (d.order.refund_id ? `${d.order.refund_id} (optional for this dispute reason)` : "Optional for this dispute reason — add refund ID only if you already refunded"),
+      required: refundRequired,
     });
   }
   if (d.evidence_requested.includes("OTHER")) {
-    items.push({ kind: "OTHER", label: "Seller note — what happened, in plain English", done: true, detail: "Drafted from order + tracking. Edit before submitting." });
+    items.push({ kind: "OTHER", label: "Seller note — what happened, in plain English", done: true, detail: "Drafted from order + tracking. Edit before submitting.", required: true });
     if (d.order.listing_text || d.reason === "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED") {
-      items.push({ kind: "OTHER", label: "Listing text snapshot", done: Boolean(d.order.listing_text), detail: d.order.listing_text ? d.order.listing_text.slice(0, 110) + "…" : "Missing — paste the exact listing text" });
+      items.push({ kind: "OTHER", label: "Listing text snapshot", done: Boolean(d.order.listing_text), detail: d.order.listing_text ? d.order.listing_text.slice(0, 110) + "…" : "Missing — paste the exact listing text", required: d.reason === "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED" });
     }
-    if (d.order.return_policy) items.push({ kind: "OTHER", label: "Return / refund policy", done: true, detail: d.order.return_policy });
+    if (d.order.return_policy) items.push({ kind: "OTHER", label: "Return / refund policy", done: true, detail: d.order.return_policy, required: false });
   }
   return items;
 }
 
 /** Explainable scorer. Every point is a visible factor — no black box, no fake "AI". */
-export function decide(d: Dispute, model = "rules-v1"): Decision {
+export function decide(d: Dispute, model = "rules-v1", history?: { won: number; lost: number }): Decision {
   const factors: DecisionFactor[] = [];
   let p = 0.5;
   const add = (label: string, points: number, evidence: string) => { p += points / 100; factors.push({ label, impact: points, evidence }); };
@@ -67,11 +78,30 @@ export function decide(d: Dispute, model = "rules-v1"): Decision {
   if (h < 0) add("Deadline already passed", -20, "PayPal may auto-close in buyer's favour");
   else if (h < 24) add("Due within 24 hours", -4, "Respond today or risk auto-loss");
 
+  if (history && history.won + history.lost >= 3) {
+    const total = history.won + history.lost;
+    const rate = history.won / total;
+    const shift = Math.min(0.1, Math.max(-0.1, (rate - 0.5) * 0.2));
+    const shiftPoints = Math.round(shift * 100);
+    p += shift;
+    factors.push({ label: `Your decided-case history (${history.won}W/${history.lost}L)`, impact: shiftPoints, evidence: `Historical win rate ${Math.round(rate * 100)}% across ${total} decided cases` });
+  }
+
   p = Math.min(0.95, Math.max(0.03, p));
+  if (d.reason === "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED" && !d.order.listing_text && p > 0.45) {
+    p = 0.45;
+    factors.push({ label: "No listing text — win probability capped at 45%", impact: 0, evidence: "Listing text is needed to rebut a not-as-described claim" });
+  }
+  if (d.reason === "UNAUTHORISED" && p > 0.65) {
+    p = 0.65;
+    factors.push({ label: "Chargeback cap applied (max 65%)", impact: 0, evidence: "UNAUTHORISED disputes are capped at 65%" });
+  }
+  const fee = contestCost();
   const gross = +(p * d.dispute_amount).toFixed(2);
-  const ev = +(gross - CONTEST_COST).toFixed(2);
+  const ev = +(gross - fee).toFixed(2);
   const checklist = buildChecklist(d);
-  const completeness = checklist.length ? checklist.filter((c) => c.done).length / checklist.length : 1;
+  const requiredItems = checklist.filter((c) => c.required !== false);
+  const completeness = requiredItems.length ? requiredItems.filter((c) => c.done).length / requiredItems.length : 1;
   const recommendation = ev > 0 && p > 0.35 && completeness > 0 ? "contest" : "accept";
 
   return {
@@ -80,7 +110,7 @@ export function decide(d: Dispute, model = "rules-v1"): Decision {
     win_probability: +p.toFixed(2),
     gross_expected: gross,
     expected_value: ev,
-    contest_cost: CONTEST_COST,
+    contest_cost: fee,
     evidence_completeness: +completeness.toFixed(2),
     factors,
     reasoning: factors.map((f) => `${f.label} (${f.impact >= 0 ? "+" : ""}${f.impact} pts) — ${f.evidence}`),

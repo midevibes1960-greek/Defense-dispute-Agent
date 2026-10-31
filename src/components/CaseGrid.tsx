@@ -56,6 +56,7 @@ export function CaseGrid({ rows, query }: { rows: CaseRow[]; query: string }) {
     {
       headerName: "Case", width: 210, pinned: "left",
       valueGetter: (p) => p.data?.order.item_title,
+      getQuickFilterText: (p) => p.data ? `${p.data.order.item_title} ${p.data.dispute_id} ${p.data.order.buyer_name} ${p.data.order.buyer_email}` : "",
       cellRenderer: (p: ICellRendererParams<CaseRow>) => (
         <span className="block leading-tight py-1">
           <span className="block truncate text-[13px] font-bold text-slate-800">{p.data?.order.item_title}</span>
@@ -64,7 +65,7 @@ export function CaseGrid({ rows, query }: { rows: CaseRow[]; query: string }) {
       ),
     },
     { headerName: "Amount", width: 105, valueGetter: (p) => p.data?.dispute_amount, cellRenderer: (p: ICellRendererParams<CaseRow>) => <b><Money v={p.value ?? 0} currency={p.data?.currency} /></b> },
-    { field: "reason_label", headerName: "Reason", width: 155 },
+    { field: "reason_label", headerName: "Reason", width: 155, getQuickFilterText: (p) => p.data ? `${p.data.reason_label} ${p.data.dispute_id}` : "" },
     { headerName: "Win odds", width: 125, valueGetter: (p) => p.data?._p, cellRenderer: WinCell, sort: "desc" },
     { headerName: "Expected value", width: 120, valueGetter: (p) => p.data?._ev, cellRenderer: (p: ICellRendererParams<CaseRow>) => <span className={`font-bold tabular-nums ${(p.value ?? 0) > 0 ? "text-emerald-700" : "text-red-600"}`}>${(p.value ?? 0).toFixed(0)}</span> },
     { headerName: "AI / rules says", width: 130, valueGetter: (p) => p.data?._rec, cellRenderer: RecCell },

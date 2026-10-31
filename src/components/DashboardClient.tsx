@@ -11,7 +11,7 @@ import { Countdown, useNow } from "./Countdown";
 const FILTERS = [
   { key: "all", label: "All cases" },
   { key: "needs_response", label: "Needs response" },
-  { key: "urgent", label: "Due < 24h" },
+  { key: "urgent", label: "Due < 24h / overdue" },
   { key: "under_review", label: "Under review" },
   { key: "resolved", label: "Resolved" },
 ] as const;
@@ -31,7 +31,7 @@ export function DashboardClient({ cases, metrics, configured, initialRows }: {
   const visible = useMemo(() => {
     let out = rows;
     if (filter === "needs_response") out = out.filter((r) => r.status === "WAITING_FOR_SELLER_RESPONSE");
-    else if (filter === "urgent") out = out.filter((r) => r.outcome === "open" && r._ms < 24 * 3600_000 && r._ms > 0);
+    else if (filter === "urgent") out = out.filter((r) => r.outcome === "open" && r._ms < 24 * 3600_000);
     else if (filter === "under_review") out = out.filter((r) => r.outcome === "under_review");
     else if (filter === "resolved") out = out.filter((r) => ["won", "lost", "accepted"].includes(r.outcome));
     return out;
@@ -59,9 +59,19 @@ export function DashboardClient({ cases, metrics, configured, initialRows }: {
     setBusy(null);
   }
 
+  const overdueCount = rows.filter((r) => r.outcome === "open" && r._ms < 0).length;
+
+  function exportCsv() {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? visible.filter((r) => [r.dispute_id, r.order.item_title, r.order.buyer_name, r.order.buyer_email, r.reason_label].some((v) => (v ?? "").toLowerCase().includes(q)))
+      : visible;
+    exportRows(filtered);
+  }
+
   const kpis = [
     { label: "Money at risk", value: <Money v={metrics.amount_at_risk} />, sub: `${metrics.open} open case${metrics.open === 1 ? "" : "s"}` },
-    { label: "Needs your response", value: String(metrics.needs_response), sub: `${metrics.at_risk_24h} due within 24h`, danger: metrics.at_risk_24h > 0 },
+    { label: "Needs your response", value: String(metrics.needs_response), sub: overdueCount > 0 ? `${overdueCount} overdue · ${metrics.at_risk_24h} due within 24h` : `${metrics.at_risk_24h} due within 24h`, danger: metrics.at_risk_24h > 0 || overdueCount > 0 },
     { label: "Under PayPal review", value: String(metrics.under_review), sub: "evidence submitted" },
     { label: "Recovered (won)", value: <Money v={metrics.recovered} />, sub: `${metrics.won} won · ${metrics.lost} lost` },
     { label: "Win rate", value: metrics.win_rate === null ? "—" : `${Math.round(metrics.win_rate * 100)}%`, sub: metrics.win_rate === null ? "no decided cases yet" : `of ${metrics.won + metrics.lost} decided` },
@@ -76,7 +86,8 @@ export function DashboardClient({ cases, metrics, configured, initialRows }: {
           <p className="text-[13px] text-slate-500">{metrics.total} cases · every number below comes from your stored cases — nothing is estimated or pre-filled.</p>
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
-          <button onClick={() => exportRows(visible)} className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-[13px] font-bold ring-1 ring-slate-300 hover:ring-slate-900"><Download className="size-4" /> Export CSV</button>
+          <button onClick={exportCsv} className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-[13px] font-bold ring-1 ring-slate-300 hover:ring-slate-900"><Download className="size-4" /> Export CSV</button>
+          {sampleCount === 0 && <button disabled={busy !== null} onClick={() => act("samples")} className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-[13px] font-bold ring-1 ring-slate-300 hover:ring-slate-900 disabled:opacity-50">{busy === "samples" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Load sample cases</button>}
           <button disabled={busy !== null} onClick={() => act("sync")} className="flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-[13px] font-bold ring-1 ring-slate-300 hover:ring-slate-900 disabled:opacity-50">{busy === "sync" ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />} Sync PayPal</button>
           <Link href="/cases/new" className="flex items-center gap-1.5 rounded-full bg-[#003087] px-4 py-2 text-[13px] font-bold text-white shadow hover:bg-[#0050a0]"><Plus className="size-4" /> New case</Link>
         </div>

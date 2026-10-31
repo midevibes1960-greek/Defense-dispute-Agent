@@ -24,14 +24,16 @@ export function NewCaseForm() {
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true); setError(null);
-    const fd = new FormData(e.currentTarget);
-    const body = Object.fromEntries(fd.entries());
-    const r = await fetch("/api/disputes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const j = await r.json();
-    setBusy(false);
-    if (!r.ok || !j.ok) { setError(j.error ?? `Failed (${r.status})`); return; }
-    router.push(`/disputes/${j.dispute.dispute_id}`);
-    router.refresh();
+    try {
+      const fd = new FormData(e.currentTarget);
+      const body = Object.fromEntries(fd.entries());
+      const r = await fetch("/api/disputes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { setError(j.error ?? `Failed (${r.status})`); return; }
+      router.push(`/disputes/${j.dispute.dispute_id}`);
+      router.refresh();
+    } catch { setError("Network error — is the server running?"); }
+    finally { setBusy(false); }
   }
 
   const hint = REASONS.find((r) => r.v === reason)?.hint;
