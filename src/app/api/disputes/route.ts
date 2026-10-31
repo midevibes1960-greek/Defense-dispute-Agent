@@ -1,0 +1,59 @@
+import { NextResponse } from "next/server";
+import { listCases, upsertCase, logEvent } from "@/lib/db";
+import { evidenceForReason, REASON_LABELS } from "@/lib/cases";
+import type { Dispute, DisputeReason } from "@/lib/types";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const q = (url.searchParams.get("q") ?? "").toLowerCase();
+  const status = url.searchParams.get("status");
+  let cases = await listCases();
+  if (status === "needs_response") cases = cases.filter((c) => c.status === "WAITING_FOR_SELLER_RESPONSE");
+  else if (status === "urgent") cases = cases.filter((c) => c.outcome === "open" && new Date(c.seller_response_due_date).getTime() - Date.now() < 24 * 3600_000);
+  else if (status === "under_review") cases = cases.filter((c) => c.outcome === "under_review");
+  else if (status === "resolved") cases = cases.filter((c) => ["won", "lost", "accepted"].includes(c.outcome));
+  else if (status === "open") cases = cases.filter((c) => c.outcome === "open");
+  if (q) cases = cases.filter((c) => JSON.stringify(c).toLowerCase().includes(q));
+  return NextResponse.json({ disputes: cases, count: cases.length });
+}
+
+const REASONS = Object.keys(REASON_LABELS) as DisputeReason[];
+
+export async function POST(req: Request) {
+  const b = await req.json().catch(() => null);
+  if (!b) return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
+  const amount = Number(b.amount);
+  const errors: string[] = [];
+  if (!String(b.item_title ?? "").trim()) errors.push("Item / service title is required");
+  if (!Number.isFinite(amount) || amount <= 0) errors.push("Amount must be greater than 0");
+  if (!REASONS.includes(b.reason)) errors.push("Choose a valid PayPal dispute reason");
+  if (errors.length) return NextResponse.json({ ok: false, error: errors.join(". ") }, { status: 422 });
+
+  const now = new Date().toISOString();
+  const due = b.seller_response_due_date ? new Date(b.seller_response_due_date).toISOString() : new Date(Date.now() + 10 * 86400_000).toISOString();
+  const reason = b.reason as DisputeReason;
+  const dispute: Dispute = {
+    dispute_id: `CASE-${Date.now().toString(36).toUpperCase()}`,
+    reason, reason_label: REASON_LABELS[reason],
+    status: "WAITING_FOR_SELLER_RESPONSE", lifecycle_stage: "INQUIRY",
+    dispute_amount: +amount.toFixed(2), currency: String(b.currency ?? "USD").toUpperCase(),
+    create_time: now, update_time: now, seller_response_due_date: due,
+    buyer_message: String(b.buyer_message ?? "").trim() || undefined,
+    evidence_requested: evidenceForReason(reason),
+    order: {
+      order_id: String(b.order_id ?? "").trim() || `ORD-${Date.now().toString(36).toUpperCase()}`,
+      item_title: String(b.item_title).trim(),
+      amount: +amount.toFixed(2), currency: String(b.currency ?? "USD").toUpperCase(),
+      buyer_email: String(b.buyer_email ?? "").trim(), buyer_name: String(b.buyer_name ?? "").trim() || "Buyer",
+      purchase_date: b.purchase_date ? new Date(b.purchase_date).toISOString() : now,
+      tracking: b.tracking_number ? { carrier_name: String(b.carrier_name ?? "OTHER").toUpperCase(), tracking_number: String(b.tracking_number).trim(), delivery_status: (b.delivery_status as Dispute["order"]["tracking"] extends { delivery_status?: infer T } ? T : never) ?? "UNKNOWN" } : undefined,
+      listing_text: String(b.listing_text ?? "").trim() || undefined,
+      return_policy: String(b.return_policy ?? "").trim() || undefined,
+      refund_id: String(b.refund_id ?? "").trim() || undefined,
+    },
+    source: "manual", outcome: "open",
+  };
+  await upsertCase(dispute);
+  await logEvent(dispute.dispute_id, "seller", "case_created", `Manual case created for ${dispute.order.item_title} ($${dispute.dispute_amount})`);
+  return NextResponse.json({ ok: true, dispute }, { status: 201 });
+}

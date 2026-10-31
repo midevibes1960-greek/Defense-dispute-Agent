@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: dispute-defense
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      # Point DATA_DIR at a Render persistent disk mount (e.g. /var/data) so cases survive deploys.
+      - key: DATA_DIR
+        sync: false
