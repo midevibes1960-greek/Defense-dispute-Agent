@@ -15,7 +15,7 @@ const NAV = [
 function NavLinks({ vertical }: { vertical?: boolean }) {
   const path = usePathname();
   return (
-    <nav className={vertical ? "flex flex-col gap-1" : "flex gap-1 overflow-x-auto"}>
+    <nav className={vertical ? "flex flex-col gap-1" : "flex flex-wrap gap-1"}>
       {NAV.map(({ href, label, icon: Icon }) => {
         const active = href === "/" ? path === "/" : path.startsWith(href);
         return (

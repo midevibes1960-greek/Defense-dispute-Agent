@@ -73,7 +73,7 @@ export function CaseGrid({ rows, query }: { rows: CaseRow[]; query: string }) {
     { headerName: "Stage", width: 130, valueGetter: (p) => p.data?.outcome, cellRenderer: (p: ICellRendererParams<CaseRow>) => p.data ? <OutcomeBadge outcome={p.data.outcome} /> : null },
     { headerName: "Source", width: 135, valueGetter: (p) => p.data?.source, cellRenderer: (p: ICellRendererParams<CaseRow>) => p.data ? <SourceBadge source={p.data.source} /> : null },
     {
-      headerName: "", width: 96, sortable: false, filter: false, pinned: "right",
+      headerName: "", width: 112, sortable: false, filter: false, pinned: "right",
       cellRenderer: (p: ICellRendererParams<CaseRow>) => (
         <Link href={`/disputes/${p.data?.dispute_id}`} onClick={(e) => e.stopPropagation()} className="rounded-full bg-[#003087] px-3.5 py-1.5 text-[12px] font-bold text-white hover:bg-[#0050a0]">Review</Link>
       ),
